@@ -2,7 +2,6 @@ cmake_minimum_required(VERSION 3.11)
 
 project(game_server CXX)
 set(CMAKE_CXX_STANDARD 20)
-set(CMAKE_CXX_FLAGS_RELEASE "-O2 -g")
 
 include(${CMAKE_BINARY_DIR}/conanbuildinfo.cmake)
 conan_basic_setup()
@@ -23,7 +22,6 @@ add_executable(game_server
 	src/model.h
 	src/model.cpp
 	src/tagged.h
-	src/boost_json.cpp
 	src/json_loader.h
 	src/json_loader.cpp
 	src/request_handler.cpp

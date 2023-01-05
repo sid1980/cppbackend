@@ -2,7 +2,7 @@
 #include <sdkddkver.h>
 #endif
 // boost.beast будет использовать std::string_view вместо boost::string_view
-// #define BOOST_BEAST_USE_STD_STRING_VIEW
+#define BOOST_BEAST_USE_STD_STRING_VIEW
 
 #include <boost/asio/ip/tcp.hpp>
 #include <boost/beast/core.hpp>
@@ -10,6 +10,8 @@
 #include <iostream>
 #include <thread>
 #include <optional>
+#include <sstream>
+#include <functional>
 
 namespace net = boost::asio;
 using tcp = net::ip::tcp;
@@ -20,7 +22,7 @@ namespace http = beast::http;
 // Запрос, тело которого представлено в виде строки
 using StringRequest = http::request<http::string_body>;
 // Ответ, тело которого представлено в виде строки
-using StringResponse = http::response<http::string_body>;
+using StringResponse = http::response<http::string_body>; 
 
 std::optional<StringRequest> ReadRequest(tcp::socket& socket, beast::flat_buffer& buffer) {
     beast::error_code ec;
@@ -38,8 +40,7 @@ std::optional<StringRequest> ReadRequest(tcp::socket& socket, beast::flat_buffer
     return req;
 }
 
-void DumpRequest(const StringRequest& req)
-{
+void DumpRequest(const StringRequest& req) {
     std::cout << req.method_string() << ' ' << req.target() << std::endl;
     // Выводим заголовки запроса
     for (const auto& header : req) {
@@ -56,10 +57,9 @@ struct ContentType {
 };
 
 // Создаёт StringResponse с заданными параметрами
-StringResponse MakeStringResponse(http::status status, std::string_view body, unsigned http_version,
+StringResponse MakeStringGetResponse(http::status status, std::string_view body, unsigned http_version,
                                   bool keep_alive,
-                                  std::string_view content_type = ContentType::TEXT_HTML)
-{
+                                  std::string_view content_type = ContentType::TEXT_HTML) {
     StringResponse response(status, http_version);
     response.set(http::field::content_type, content_type);
     response.body() = body;
@@ -68,29 +68,43 @@ StringResponse MakeStringResponse(http::status status, std::string_view body, un
     return response;
 }
 
-StringResponse HandleRequest(StringRequest&& req)
-{
-    const auto text_response = [&req](http::status status, std::string_view text) {
-        return MakeStringResponse(status, text, req.version(), req.keep_alive());
-    };
+StringResponse MakeStringHeadResponse(http::status status, size_t bodySize, unsigned http_version,
+                                  bool keep_alive,
+                                  std::string_view content_type = ContentType::TEXT_HTML) {
+    StringResponse response(status, http_version);
+    response.set(http::field::content_type, content_type);
+    response.content_length(bodySize);
+    response.keep_alive(keep_alive);
+    return response;
+}
 
-    std::string_view str = req.target();
-    str.remove_prefix(1);
+StringResponse MakeStringOtherResponse(http::status status, unsigned http_version,
+                                  bool keep_alive,
+                                  std::string_view content_type = ContentType::TEXT_HTML) {
+    StringResponse response(status, http_version);
+    response.set(http::field::content_type, content_type);
+    response.set(http::field::allow, "GET, HEAD");
+    response.body() = "Invalid method"sv;
+    response.content_length(response.body().size());
+    response.keep_alive(keep_alive);
+    return response;
+}
 
-    if (req.method() == http::verb::get
-        || req.method() == http::verb::head )
+StringResponse HandleRequest(StringRequest&& req) {
+    switch (req.method())
     {
-        return text_response(http::status::ok,
-                             std::string("<strong>Hello, ")
-                             + std::string(str)
-                             + std::string("</strong>"));
-    }
-    else
-    {
-        MakeStringResponse(http::status::method_not_allowed,
-                           std::string("Invalid method"),
-                           req.version(),
-                           req.keep_alive());
+        case http::verb::get:{
+            std::stringstream text;
+            text << "Hello, " << req.target().substr(1);
+            return MakeStringGetResponse(http::status::ok, text.str(), req.version(), req.keep_alive());
+        }
+        case http::verb::head:{
+            std::stringstream text;
+            text << "Hello, " << req.target().substr(1);
+            return MakeStringHeadResponse(http::status::ok, text.str().size(), req.version(), req.keep_alive());
+        }
+        default:
+            return MakeStringOtherResponse(http::status::method_not_allowed, req.version(), req.keep_alive());
     }
 }
 
@@ -103,7 +117,6 @@ void HandleConnection(tcp::socket& socket, RequestHandler&& handle_request) {
         // Продолжаем обработку запросов, пока клиент их отправляет
         while (auto request = ReadRequest(socket, buffer)) {
             DumpRequest(*request);
-            // Делегируем обработку запроса функции handle_request
             StringResponse response = handle_request(*std::move(request));
             http::write(socket, response);
             if (response.need_eof()) {
@@ -118,27 +131,28 @@ void HandleConnection(tcp::socket& socket, RequestHandler&& handle_request) {
     socket.shutdown(tcp::socket::shutdown_send, ec);
 }
 
-int main()
-{
+int main() {
+    // Выведите строчку "Server has started...", когда сервер будет готов принимать подключения
+    // Контекст для выполнения синхронных и асинхронных операций ввода/вывода
     net::io_context ioc;
-
     const auto address = net::ip::make_address("0.0.0.0");
     constexpr unsigned short port = 8080;
 
+    // Объект, позволяющий принимать tcp-подключения к сокету
     tcp::acceptor acceptor(ioc, {address, port});
-    std::cout << "Server has started..."sv << std::endl;
-
     while (true) {
         tcp::socket socket(ioc);
+        std::cout << "Server has started..."sv << std::endl;
         acceptor.accept(socket);
+        std::cout << "Connection received"sv << std::endl;
 
         // Запускаем обработку взаимодействия с клиентом в отдельном потоке
         std::thread t(
-                    // Лямбда-функция будет выполняться в отдельном потоке
-                    [](tcp::socket socket) {
-            HandleConnection(socket, HandleRequest);
-        },
-        std::move(socket));  // Сокет нельзя скопировать, но можно переместить
+            // Лямбда-функция будет выполняться в отдельном потоке
+            [](tcp::socket socket) {
+                HandleConnection(socket, HandleRequest);
+            },
+            std::move(socket));  // Сокет нельзя скопировать, но можно переместить
 
         // После вызова detach поток продолжит выполняться независимо от объекта t
         t.detach();

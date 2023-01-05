@@ -1,6 +1,7 @@
 #include "http_server.h"
-#include <iostream>
 
+#include <boost/asio/dispatch.hpp>
+#include <iostream>
 
 namespace http_server {
 
@@ -57,6 +58,5 @@ void SessionBase::Close() {
     beast::error_code ec;
     stream_.socket().shutdown(tcp::socket::shutdown_send, ec);
 }
-
 
 }  // namespace http_server
